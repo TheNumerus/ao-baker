@@ -9,7 +9,7 @@ use cgmath::prelude::*;
 use cgmath::{Vector3, vec3, perspective, Matrix4, Deg, Point3};
 
 use wavefront_obj::obj;
-use wavefront_obj::obj::Primitive;
+use wavefront_obj::obj::{Primitive, Object};
 use std::fs::File;
 use std::io::{Read, BufReader};
 use glium::uniforms::UniformValue;
@@ -17,6 +17,7 @@ use std::time::Instant;
 use std::path::PathBuf;
 use std::thread;
 use std::sync::{Arc, Mutex};
+use rand::{thread_rng, Rng};
 
 #[derive(Clone, Copy, Debug)]
 struct Vertex {
@@ -85,7 +86,8 @@ fn main() {
     let mut is_focused = false;
     let mut time_earlier = Instant::now();
     let mut time = Instant::now();
-    let time_last = time.duration_since(time);
+
+    let mut light_enabled = true;
 
     event_loop.run(move |event, _wt, control_flow | {
         match event {
@@ -104,7 +106,13 @@ fn main() {
                 let mut target = display.draw();
                 target.clear_color(0.1, 0.1, 0.1, 1.0);
                 target.clear_depth(1.0);
-                target.draw(&vertex_buffer, &glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList), &program, &uniform!(model: Matrix4Wrapper(transform), view: Matrix4Wrapper(view), world: Matrix4Wrapper(world)), &draw_param).unwrap();
+                let uniforms = uniform!(
+                    model: Matrix4Wrapper(transform),
+                    view: Matrix4Wrapper(view),
+                    world: Matrix4Wrapper(world),
+                    light: light_enabled
+                );
+                target.draw(&vertex_buffer, &glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList), &program, &uniforms, &draw_param).unwrap();
                 target.finish().unwrap();
             },
             Event::WindowEvent {
@@ -118,7 +126,7 @@ fn main() {
                 event: WindowEvent::DroppedFile(file_path),
                 ..
             } => {
-                file_dropped(file_path, &display, &mut vertex_buffer, Arc::clone(&vertex_data));
+                file_dropped(file_path, &display, Arc::clone(&vertex_data));
             },
             Event::WindowEvent {
                 event: WindowEvent::Focused(focus),
@@ -131,6 +139,14 @@ fn main() {
                 ..
             } => {
                 *control_flow = ControlFlow::Exit
+            },
+            Event::WindowEvent {
+                event: WindowEvent::ReceivedCharacter(ch),
+                ..
+            } => {
+                if ch == 'd' {
+                    light_enabled = !light_enabled;
+                }
             },
             _ => {
                 if is_focused {
@@ -180,15 +196,11 @@ impl glium::uniforms::AsUniformValue for Matrix4Wrapper {
     }
 }
 
-fn file_dropped(file_path: PathBuf, display: &glium::Display, vertex_buffer: &mut glium::VertexBuffer<Vertex>, vertex_data: Arc<Mutex<VertexData>>) {
+fn file_dropped(file_path: PathBuf, display: &glium::Display, vertex_data: Arc<Mutex<VertexData>>) {
     if let Some(ext) = file_path.extension() {
         if ext == "obj" {
             println!("open {:?}", file_path.file_name());
-            let file = File::open(file_path).unwrap();
-            let mut file_content = String::new();
-            let mut reader = BufReader::new(file);
-            reader.read_to_string(&mut file_content).unwrap();
-            let obj = obj::parse(file_content).unwrap().objects[0].to_owned();
+            let obj = read_obj(file_path);
             let mut verts = Vec::with_capacity(obj.geometry[0].shapes.len() * 3);
             for shape in &obj.geometry[0].shapes {
                 match shape.primitive {
@@ -207,27 +219,43 @@ fn file_dropped(file_path: PathBuf, display: &glium::Display, vertex_buffer: &mu
                     }
                 }
             }
-            *vertex_buffer = glium::VertexBuffer::new(display, &verts).unwrap();
+            vertex_data.lock().unwrap().update(verts.to_owned());
             display.gl_window().window().request_redraw();
             thread::spawn(move || {
+                let mut rng = thread_rng();
+                let mut lines = Vec::new();
+                for _ in 0..64 {
+                    lines.push(vec3(rng.gen_range(-1.0, 1.0), rng.gen_range(-1.0, 1.0), rng.gen_range(-1.0, 1.0)).normalize());
+                }
                 for vert in &mut verts {
-                    for shape in &obj.geometry[0].shapes {
-                        let shape = match shape.primitive {
-                            Primitive::Line(_, _) | Primitive::Point(_) => panic!(),
-                            Primitive::Triangle(a, b, c) => {
-                                let v0 = vec3(obj.vertices[a.0].x as f32, obj.vertices[a.0].y as f32, obj.vertices[a.0].z as f32);
-                                let v1 = vec3(obj.vertices[b.0].x as f32, obj.vertices[b.0].y as f32, obj.vertices[b.0].z as f32);
-                                let v2 = vec3(obj.vertices[c.0].x as f32, obj.vertices[c.0].y as f32, obj.vertices[c.0].z as f32);
-                                [v0, v1, v2]
+                    let mut hits = 0;
+                    for line in &lines {
+                        for shape in &obj.geometry[0].shapes {
+                            let shape = match shape.primitive {
+                                Primitive::Line(_, _) | Primitive::Point(_) => panic!(),
+                                Primitive::Triangle(a, b, c) => {
+                                    let v0 = vec3(obj.vertices[a.0].x as f32, obj.vertices[a.0].y as f32, obj.vertices[a.0].z as f32);
+                                    let v1 = vec3(obj.vertices[b.0].x as f32, obj.vertices[b.0].y as f32, obj.vertices[b.0].z as f32);
+                                    let v2 = vec3(obj.vertices[c.0].x as f32, obj.vertices[c.0].y as f32, obj.vertices[c.0].z as f32);
+                                    [v0, v1, v2]
+                                }
+                            };
+                            let is_hit = if line.dot(vec3(vert.normal[0], vert.normal[1], vert.normal[2])) > 0.0 {
+                                ray_triangle_intersect(vec3(vert.pos[0], vert.pos[1], vert.pos[2]), *line, shape)
+                            } else {
+                                ray_triangle_intersect(vec3(vert.pos[0], vert.pos[1], vert.pos[2]), -*line, shape)
+                            };
+
+                            if is_hit {
+                                hits += 1;
+                                break;
                             }
-                        };
-                        let is_hit = ray_triangle_intersect(vec3(vert.pos[0], vert.pos[1], vert.pos[2]),
-                                                            vec3(vert.normal[0], vert.normal[1], vert.normal[2]),
-                                                            shape);
-                        if is_hit {
-                            vert.color = [0.0; 3];
-                            break;
                         }
+                    }
+                    if hits != 0 {
+                        let color = 1.0 - (hits as f32 / lines.len() as f32);
+                        vert.color = [color; 3];
+                        continue;
                     }
                 }
                 vertex_data.lock().unwrap().update(verts);
@@ -235,4 +263,12 @@ fn file_dropped(file_path: PathBuf, display: &glium::Display, vertex_buffer: &mu
             });
         }
     }
+}
+
+fn read_obj(filename: PathBuf) -> Object {
+    let file = File::open(filename).unwrap();
+    let mut file_content = String::new();
+    let mut reader = BufReader::new(file);
+    reader.read_to_string(&mut file_content).unwrap();
+    obj::parse(file_content).unwrap().objects[0].to_owned()
 }

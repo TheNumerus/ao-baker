@@ -4,6 +4,9 @@ version = "0.1.0"
 authors = ["petr"]
 edition = "2018"
 
+[profile.release]
+debug = true
+
 [dependencies]
 glium = "0.26.0-alpha5"
 wavefront_obj = "7.0.0"

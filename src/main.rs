@@ -4,6 +4,7 @@ use glium::glutin::event::{Event, WindowEvent};
 use glium::glutin::event_loop::{EventLoop, ControlFlow};
 use glium::glutin::window::WindowBuilder;
 use glium::uniforms::UniformValue;
+use glium::index::PrimitiveType;
 use glium::{implement_vertex, Surface, uniform, Display, Program};
 
 use cgmath::prelude::*;
@@ -18,6 +19,7 @@ use std::time::{Instant};
 use std::path::PathBuf;
 use std::thread;
 use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 
 use rand::{thread_rng, Rng, prelude::*};
 
@@ -112,6 +114,7 @@ fn main() {
     let mut vertex_buffer = glium::VertexBuffer::new(&display, &[]).unwrap();
 
     let vertex_data = Arc::new(Mutex::new(VertexData{data: Vec::new(), should_update: false}));
+    let mut indices = glium::index::IndexBuffer::new(&display, PrimitiveType::TrianglesList, &[]).unwrap();
 
     let transform = Matrix4::from_scale(1.0_f32);
 
@@ -156,7 +159,7 @@ fn main() {
                     light: wd.shading_enabled,
                     ao: wd.ao_enabled
                 );
-                target.draw(&vertex_buffer, &glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList), &program, &uniforms, &draw_param).unwrap();
+                target.draw(&vertex_buffer, &indices, &program, &uniforms, &draw_param).unwrap();
                 target.finish().unwrap();
             },
             Event::WindowEvent {
@@ -170,7 +173,7 @@ fn main() {
                 event: WindowEvent::DroppedFile(file_path),
                 ..
             } => {
-                file_dropped(file_path, &display, Arc::clone(&vertex_data));
+                file_dropped(file_path, &display, Arc::clone(&vertex_data), &mut indices);
             },
             Event::WindowEvent {
                 event: WindowEvent::Focused(focus),
@@ -212,7 +215,7 @@ fn ray_triangle_intersect(orig: Vector3<f32>, dir: Vector3<f32>, vertices: [Vect
     let v0v2 = vertices[2] - vertices[0];
     let pvec = dir.cross(v0v2);
     let det = v0v1.dot(pvec);
-    if det < std::f32::EPSILON {
+    if det.abs() < std::f32::EPSILON {
         return false;
     }
     let inv_det = 1.0 / det;
@@ -243,15 +246,22 @@ impl glium::uniforms::AsUniformValue for Matrix4Wrapper {
     }
 }
 
-fn file_dropped(file_path: PathBuf, display: &glium::Display, vertex_data: Arc<Mutex<VertexData>>) {
+fn file_dropped(file_path: PathBuf, display: &glium::Display, vertex_data: Arc<Mutex<VertexData>>, indices: &mut glium::index::IndexBuffer<u32>) {
     if let Some(ext) = file_path.extension() {
-        if ext == "obj" {
-            println!("open {:?}", file_path.file_name());
-            let obj = read_obj(file_path);
-            let mut verts = Vec::with_capacity(obj.geometry[0].shapes.len() * 3);
-            for shape in &obj.geometry[0].shapes {
-                if let Primitive::Triangle(a, b, c) = shape.primitive {
-                    for index in &[a, b, c] {
+        if ext != "obj" {
+            return;
+        }
+        println!("opening {:?}", file_path.file_name());
+        let obj = read_obj(file_path);
+        let mut verts = Vec::with_capacity(obj.geometry[0].shapes.len() * 3);
+        let mut indices_vec: Vec<u32> = Vec::new();
+        let mut map = HashMap::new();
+        let mut i = 0;
+        for shape in &obj.geometry[0].shapes {
+            if let Primitive::Triangle(a, b, c) = shape.primitive {
+                for index in &[a, b, c] {
+                    if !map.contains_key(&(index.0, index.2.unwrap())) {
+                        map.insert((index.0, index.2.unwrap()), i);
                         let vert_a = obj.vertices[index.0];
                         let norm_a = obj.normals[index.2.unwrap()];
                         let vert = Vertex{
@@ -260,50 +270,64 @@ fn file_dropped(file_path: PathBuf, display: &glium::Display, vertex_data: Arc<M
                             normal: [norm_a.x as f32, norm_a.y as f32, norm_a.z as f32]
                         };
                         verts.push(vert);
+                        indices_vec.push(i);
+                        i += 1;
+                    } else {
+                        indices_vec.push(map[&(index.0, index.2.unwrap())]);
                     }
                 }
             }
-            vertex_data.lock().unwrap().update(verts.to_owned());
-            display.gl_window().window().request_redraw();
-            thread::spawn(move || {
-                let time = Instant::now();
-                let mut rng = thread_rng();
-                let spread = ANGLE_SPREAD / 180.0 * std::f32::consts::PI;
-                for vert in &mut verts {
-                    let mut hits = 0;
-                    for _sample in 0..SAMPLES {
-                        let line = get_random_ray(spread, vert.normal.into(), &mut rng);
-                        for shape in &obj.geometry[0].shapes {
-                            let shape = if let Primitive::Triangle(a, b, c) = shape.primitive {
-                                let v0 = vec3(obj.vertices[a.0].x as f32, obj.vertices[a.0].y as f32, obj.vertices[a.0].z as f32);
-                                let v1 = vec3(obj.vertices[b.0].x as f32, obj.vertices[b.0].y as f32, obj.vertices[b.0].z as f32);
-                                let v2 = vec3(obj.vertices[c.0].x as f32, obj.vertices[c.0].y as f32, obj.vertices[c.0].z as f32);
-                                [v0, v1, v2]
-                            } else {
-                                continue
-                            };
+        }
+        *indices = glium::index::IndexBuffer::new(display, PrimitiveType::TrianglesList, &indices_vec).unwrap();
+        vertex_data.lock().unwrap().update(verts.to_owned());
+        display.gl_window().window().request_redraw();
+        thread::spawn(move || {
+            let time = Instant::now();
+            let mut rng = thread_rng();
+            let spread = ANGLE_SPREAD / 180.0 * std::f32::consts::PI;
 
-                            let offset = Vector3::from(vert.normal) * 0.03;
+            let mut lines = Vec::with_capacity(SAMPLES as usize);
+            for _ in 0..SAMPLES {
+                lines.push(get_random_ray(spread, &mut rng));
+            }
+            for vert in &mut verts {
+                let mut hits = 0;
 
-                            let is_hit = ray_triangle_intersect(vec3(vert.pos[0], vert.pos[1], vert.pos[2]) + offset, line, shape);
+                let offset = Vector3::from(vert.normal) * 0.03;
+                let orig = Vector3::from(vert.pos) + offset;
+                let q = Quaternion::from_arc(vec3(0.0, 0.0, 1.0), vert.normal.into(), None);
+                let mat = Matrix3::from(q);
 
-                            if is_hit {
-                                hits += 1;
-                                break;
-                            }
+                for line in &lines {
+                    let line = mat * line;
+                    for shape in &obj.geometry[0].shapes {
+                        let shape = if let Primitive::Triangle(a, b, c) = shape.primitive {
+                            let v0 = vec3(obj.vertices[a.0].x as f32, obj.vertices[a.0].y as f32, obj.vertices[a.0].z as f32);
+                            let v1 = vec3(obj.vertices[b.0].x as f32, obj.vertices[b.0].y as f32, obj.vertices[b.0].z as f32);
+                            let v2 = vec3(obj.vertices[c.0].x as f32, obj.vertices[c.0].y as f32, obj.vertices[c.0].z as f32);
+                            [v0, v1, v2]
+                        } else {
+                            continue
+                        };
+
+                        let is_hit = ray_triangle_intersect(orig, line, shape);
+
+                        if is_hit {
+                            hits += 1;
+                            break;
                         }
                     }
-                    if hits != 0 {
-                        let color = 1.0 - (hits as f32 / SAMPLES as f32);
-                        vert.color = [color; 3];
-                        continue;
-                    }
                 }
-                vertex_data.lock().unwrap().update(verts);
-                let time = time.elapsed();
-                println!("comp finished in {} secs", time.as_secs_f64());
-            });
-        }
+                if hits != 0 {
+                    let color = 1.0 - (hits as f32 / SAMPLES as f32);
+                    vert.color = [color; 3];
+                    continue;
+                }
+            }
+            vertex_data.lock().unwrap().update(verts);
+            let time = time.elapsed();
+            println!("comp finished in {} secs", time.as_secs_f64());
+        });
     }
 }
 
@@ -315,7 +339,7 @@ fn read_obj(filename: PathBuf) -> Object {
     obj::parse(file_content).unwrap().objects[0].to_owned()
 }
 
-fn get_random_ray(angle_spread: f32, dir: Vector3<f32>, rng: &mut ThreadRng) -> Vector3<f32> {
+fn get_random_ray(angle_spread: f32, rng: &mut ThreadRng) -> Vector3<f32> {
     debug_assert!(angle_spread > 0.0);
     debug_assert!(angle_spread < std::f32::consts::PI);
 
@@ -323,8 +347,5 @@ fn get_random_ray(angle_spread: f32, dir: Vector3<f32>, rng: &mut ThreadRng) -> 
     let rot = rng.gen_range(0.0, std::f32::consts::PI * 2.0);
     let one_minus_z = (1.0 - (angle).powi(2)).sqrt();
     let vec = vec3(one_minus_z * rot.cos(), one_minus_z * rot.sin(), angle);
-
-    let q = Quaternion::from_arc(vec3(0.0, 0.0, 1.0), dir, None);
-    let mat = Matrix3::from(q);
-    mat * vec
+    vec
 }

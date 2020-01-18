@@ -3,21 +3,23 @@
 use glium::glutin::event::{Event, WindowEvent};
 use glium::glutin::event_loop::{EventLoop, ControlFlow};
 use glium::glutin::window::WindowBuilder;
-use glium::{implement_vertex, Surface, uniform};
+use glium::uniforms::UniformValue;
+use glium::{implement_vertex, Surface, uniform, Display, Program};
 
 use cgmath::prelude::*;
-use cgmath::{Vector3, vec3, perspective, Matrix4, Deg, Point3};
+use cgmath::{Vector3, vec3, perspective, Matrix4, Deg, Point3, Quaternion, Matrix3};
 
 use wavefront_obj::obj;
 use wavefront_obj::obj::{Primitive, Object};
+
 use std::fs::File;
 use std::io::{Read, BufReader};
-use glium::uniforms::UniformValue;
-use std::time::Instant;
+use std::time::{Instant};
 use std::path::PathBuf;
 use std::thread;
 use std::sync::{Arc, Mutex};
-use rand::{thread_rng, Rng};
+
+use rand::{thread_rng, Rng, prelude::*};
 
 #[derive(Clone, Copy, Debug)]
 struct Vertex {
@@ -28,11 +30,16 @@ struct Vertex {
 
 implement_vertex!(Vertex, pos, color, normal);
 
-const TRIANGLE: [Vertex; 3] = [
-    Vertex { pos: [ -0.5, -0.5, 0.0 ], color: [1.0, 0.0, 0.0], normal: [0.0, 1.0, 0.0] },
-    Vertex { pos: [  0.5, -0.5, 0.0 ], color: [0.0, 1.0, 0.0], normal: [0.0, 1.0, 0.0] },
-    Vertex { pos: [  0.0,  0.5, 0.0 ], color: [0.0, 0.0, 1.0], normal: [0.0, 1.0, 0.0] }
-];
+const CENTER: Point3<f32> = Point3::new(0.0, 0.0, 0.0);
+const CAMERA_DIST: f32 = 3.0;
+const UP_VECTOR: Vector3<f32> = vec3(0.0, 1.0, 0.0);
+const ANGLE_SPREAD: f32 = 178.0;
+
+const SIZE_X: u32 = 1280;
+const SIZE_Y: u32 = 720;
+const ASPECT_RATIO: f32 = 1280.0_f32 / 720.0;
+
+const SAMPLES: u32 = 8;
 
 struct VertexData {
     data: Vec<Vertex>,
@@ -46,32 +53,71 @@ impl VertexData {
     }
 }
 
-fn main() {
+struct WorldData {
+    circle: f32,
+    camera_distance: f32,
+    world_mat: Matrix4<f32>,
+    shading_enabled: bool,
+    is_paused: bool,
+    ao_enabled: bool
+}
+
+impl WorldData {
+    fn rotate_delta(&mut self, delta: f32) {
+        if self.is_paused {
+            return;
+        }
+        self.circle += delta;
+        let x = self.camera_distance * self.circle.sin();
+        let z = self.camera_distance * self.circle.cos();
+        self.world_mat = Matrix4::look_at(Point3::new(x, 0.0, z), CENTER, UP_VECTOR);
+    }
+}
+
+impl Default for WorldData {
+    fn default() -> Self {
+        Self {
+            circle: 0.0,
+            camera_distance: CAMERA_DIST,
+            world_mat: Matrix4::look_at(Point3::new(0.0, 0.0, CAMERA_DIST), CENTER, UP_VECTOR),
+            shading_enabled: true,
+            is_paused: false,
+            ao_enabled: true
+        }
+    }
+}
+
+fn make_display() -> (EventLoop<()>, Display) {
     let event_loop = EventLoop::new();
     let wb = WindowBuilder::new()
         .with_title("AO Baker".to_string())
-        .with_inner_size((1280, 720).into()).with_min_inner_size((400, 400).into());
+        .with_inner_size((SIZE_X, SIZE_Y).into()).with_min_inner_size((400, 400).into());
 
     let cb = glium::glutin::ContextBuilder::new().with_depth_buffer(16).with_srgb(false);
     let display = glium::Display::new(wb, cb, &event_loop).unwrap();
+    (event_loop, display)
+}
 
+fn make_program(display: &Display) -> Program {
     let vert = include_str!("test.vert");
     let frag = include_str!("test.frag");
 
-    let program = glium::Program::from_source(&display, vert, frag, None).unwrap();
+    glium::Program::from_source(display, vert, frag, None).unwrap()
+}
 
-    let mut vertex_buffer = glium::VertexBuffer::new(&display, &TRIANGLE).unwrap();
+fn main() {
+    let (event_loop, display) = make_display();
+    let program = make_program(&display);
+
+    let mut vertex_buffer = glium::VertexBuffer::new(&display, &[]).unwrap();
 
     let vertex_data = Arc::new(Mutex::new(VertexData{data: Vec::new(), should_update: false}));
 
-    let transform = Matrix4::from_scale(0.7_f32);
+    let transform = Matrix4::from_scale(1.0_f32);
 
-    let mut circle = 0.0_f32;
+    let mut wd = WorldData::default();
 
-    let mut world = Matrix4::look_at(Point3{x: 3.0 * circle.sin(), y: 0.0, z: 3.0 * circle.cos()}, Point3{x: 0.0, y: 0.0, z: 0.0}, vec3(0.0, 1.0, 0.0));
-
-    let aspect_ratio = 1280.0_f32 / 720.0;
-    let mut view = perspective(Deg(60.0), aspect_ratio, 0.01_f32, 100.0_f32);
+    let mut view = perspective(Deg(60.0), ASPECT_RATIO, 0.01_f32, 100.0_f32);
 
     let draw_param = glium::DrawParameters{
         depth: glium::Depth{
@@ -87,8 +133,6 @@ fn main() {
     let mut time_earlier = Instant::now();
     let mut time = Instant::now();
 
-    let mut light_enabled = true;
-
     event_loop.run(move |event, _wt, control_flow | {
         match event {
             Event::WindowEvent {
@@ -98,19 +142,19 @@ fn main() {
                 let delta = time.duration_since(time_earlier);
                 time_earlier = time;
                 time = Instant::now();
-                circle += delta.as_secs_f64() as f32;
-                world = Matrix4::look_at(Point3{x: 3.0 * circle.sin(), y: 0.0, z: 3.0 * circle.cos()}, Point3{x: 0.0, y: 0.0, z: 0.0}, vec3(0.0, 1.0, 0.0));
+                wd.rotate_delta(delta.as_secs_f32());
                 if vertex_data.lock().unwrap().should_update {
                     vertex_buffer = glium::VertexBuffer::new(&display, &vertex_data.lock().unwrap().data).unwrap();
                 }
                 let mut target = display.draw();
-                target.clear_color(0.1, 0.1, 0.1, 1.0);
+                target.clear_color(0.02, 0.02, 0.02, 1.0);
                 target.clear_depth(1.0);
                 let uniforms = uniform!(
                     model: Matrix4Wrapper(transform),
                     view: Matrix4Wrapper(view),
-                    world: Matrix4Wrapper(world),
-                    light: light_enabled
+                    world: Matrix4Wrapper(wd.world_mat),
+                    light: wd.shading_enabled,
+                    ao: wd.ao_enabled
                 );
                 target.draw(&vertex_buffer, &glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList), &program, &uniforms, &draw_param).unwrap();
                 target.finish().unwrap();
@@ -144,8 +188,11 @@ fn main() {
                 event: WindowEvent::ReceivedCharacter(ch),
                 ..
             } => {
-                if ch == 'd' {
-                    light_enabled = !light_enabled;
+                match ch {
+                    'd' => wd.shading_enabled = !wd.shading_enabled,
+                    'p' => wd.is_paused = !wd.is_paused,
+                    'f' => wd.ao_enabled = !wd.ao_enabled,
+                    _ => {}
                 }
             },
             _ => {
@@ -203,48 +250,42 @@ fn file_dropped(file_path: PathBuf, display: &glium::Display, vertex_data: Arc<M
             let obj = read_obj(file_path);
             let mut verts = Vec::with_capacity(obj.geometry[0].shapes.len() * 3);
             for shape in &obj.geometry[0].shapes {
-                match shape.primitive {
-                    Primitive::Line(_, _) | Primitive::Point(_) => panic!(),
-                    Primitive::Triangle(a, b, c) => {
-                        for index in &[a, b, c] {
-                            let vert_a = obj.vertices[index.0];
-                            let norm_a = obj.normals[index.2.unwrap()];
-                            let vert = Vertex{
-                                color: [1.0; 3],
-                                pos: [vert_a.x as f32, vert_a.y as f32, vert_a.z as f32],
-                                normal: [norm_a.x as f32, norm_a.y as f32, norm_a.z as f32]
-                            };
-                            verts.push(vert);
-                        }
+                if let Primitive::Triangle(a, b, c) = shape.primitive {
+                    for index in &[a, b, c] {
+                        let vert_a = obj.vertices[index.0];
+                        let norm_a = obj.normals[index.2.unwrap()];
+                        let vert = Vertex{
+                            color: [1.0; 3],
+                            pos: [vert_a.x as f32, vert_a.y as f32, vert_a.z as f32],
+                            normal: [norm_a.x as f32, norm_a.y as f32, norm_a.z as f32]
+                        };
+                        verts.push(vert);
                     }
                 }
             }
             vertex_data.lock().unwrap().update(verts.to_owned());
             display.gl_window().window().request_redraw();
             thread::spawn(move || {
+                let time = Instant::now();
                 let mut rng = thread_rng();
-                let mut lines = Vec::new();
-                for _ in 0..64 {
-                    lines.push(vec3(rng.gen_range(-1.0, 1.0), rng.gen_range(-1.0, 1.0), rng.gen_range(-1.0, 1.0)).normalize());
-                }
+                let spread = ANGLE_SPREAD / 180.0 * std::f32::consts::PI;
                 for vert in &mut verts {
                     let mut hits = 0;
-                    for line in &lines {
+                    for _sample in 0..SAMPLES {
+                        let line = get_random_ray(spread, vert.normal.into(), &mut rng);
                         for shape in &obj.geometry[0].shapes {
-                            let shape = match shape.primitive {
-                                Primitive::Line(_, _) | Primitive::Point(_) => panic!(),
-                                Primitive::Triangle(a, b, c) => {
-                                    let v0 = vec3(obj.vertices[a.0].x as f32, obj.vertices[a.0].y as f32, obj.vertices[a.0].z as f32);
-                                    let v1 = vec3(obj.vertices[b.0].x as f32, obj.vertices[b.0].y as f32, obj.vertices[b.0].z as f32);
-                                    let v2 = vec3(obj.vertices[c.0].x as f32, obj.vertices[c.0].y as f32, obj.vertices[c.0].z as f32);
-                                    [v0, v1, v2]
-                                }
-                            };
-                            let is_hit = if line.dot(vec3(vert.normal[0], vert.normal[1], vert.normal[2])) > 0.0 {
-                                ray_triangle_intersect(vec3(vert.pos[0], vert.pos[1], vert.pos[2]), *line, shape)
+                            let shape = if let Primitive::Triangle(a, b, c) = shape.primitive {
+                                let v0 = vec3(obj.vertices[a.0].x as f32, obj.vertices[a.0].y as f32, obj.vertices[a.0].z as f32);
+                                let v1 = vec3(obj.vertices[b.0].x as f32, obj.vertices[b.0].y as f32, obj.vertices[b.0].z as f32);
+                                let v2 = vec3(obj.vertices[c.0].x as f32, obj.vertices[c.0].y as f32, obj.vertices[c.0].z as f32);
+                                [v0, v1, v2]
                             } else {
-                                ray_triangle_intersect(vec3(vert.pos[0], vert.pos[1], vert.pos[2]), -*line, shape)
+                                continue
                             };
+
+                            let offset = Vector3::from(vert.normal) * 0.03;
+
+                            let is_hit = ray_triangle_intersect(vec3(vert.pos[0], vert.pos[1], vert.pos[2]) + offset, line, shape);
 
                             if is_hit {
                                 hits += 1;
@@ -253,13 +294,14 @@ fn file_dropped(file_path: PathBuf, display: &glium::Display, vertex_data: Arc<M
                         }
                     }
                     if hits != 0 {
-                        let color = 1.0 - (hits as f32 / lines.len() as f32);
+                        let color = 1.0 - (hits as f32 / SAMPLES as f32);
                         vert.color = [color; 3];
                         continue;
                     }
                 }
                 vertex_data.lock().unwrap().update(verts);
-                println!("comp finished");
+                let time = time.elapsed();
+                println!("comp finished in {} secs", time.as_secs_f64());
             });
         }
     }
@@ -271,4 +313,18 @@ fn read_obj(filename: PathBuf) -> Object {
     let mut reader = BufReader::new(file);
     reader.read_to_string(&mut file_content).unwrap();
     obj::parse(file_content).unwrap().objects[0].to_owned()
+}
+
+fn get_random_ray(angle_spread: f32, dir: Vector3<f32>, rng: &mut ThreadRng) -> Vector3<f32> {
+    debug_assert!(angle_spread > 0.0);
+    debug_assert!(angle_spread < std::f32::consts::PI);
+
+    let angle = rng.gen_range((angle_spread / 2.0).cos(), 1.0);
+    let rot = rng.gen_range(0.0, std::f32::consts::PI * 2.0);
+    let one_minus_z = (1.0 - (angle).powi(2)).sqrt();
+    let vec = vec3(one_minus_z * rot.cos(), one_minus_z * rot.sin(), angle);
+
+    let q = Quaternion::from_arc(vec3(0.0, 0.0, 1.0), dir, None);
+    let mat = Matrix3::from(q);
+    mat * vec
 }

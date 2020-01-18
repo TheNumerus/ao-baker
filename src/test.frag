@@ -1,6 +1,7 @@
 #version 140
 
 uniform bool light;
+uniform bool ao;
 
 out vec4 out_color;
 in vec3 vert_color;
@@ -11,5 +12,9 @@ void main() {
     if (!light) {
         shade = 1.0;
     }
-    out_color = vec4(vert_color * shade, 1.0);
+    if (!ao) {
+        out_color = vec4(vec3(1.0) * shade, 1.0);
+    } else {
+        out_color = vec4(vert_color * shade, 1.0);
+    }
 }

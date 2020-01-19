@@ -8,7 +8,7 @@ edition = "2018"
 debug = true
 
 [dependencies]
-glium = "0.26.0-alpha5"
+glium = "0.26.0-alpha6"
 wavefront_obj = "7.0.0"
 cgmath = "0.17.0"
 rand = "0.7.2"

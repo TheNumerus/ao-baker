@@ -41,7 +41,7 @@ const SIZE_X: u32 = 1280;
 const SIZE_Y: u32 = 720;
 const ASPECT_RATIO: f32 = 1280.0_f32 / 720.0;
 
-const SAMPLES: u32 = 8;
+const SAMPLES: u32 = 256;
 
 struct VertexData {
     data: Vec<Vertex>,
@@ -146,8 +146,11 @@ fn main() {
                 time_earlier = time;
                 time = Instant::now();
                 wd.rotate_delta(delta.as_secs_f32());
-                if vertex_data.lock().unwrap().should_update {
-                    vertex_buffer = glium::VertexBuffer::new(&display, &vertex_data.lock().unwrap().data).unwrap();
+                {
+                    let lock = vertex_data.lock().unwrap();
+                    if lock.should_update {
+                        vertex_buffer = glium::VertexBuffer::new(&display, &lock.data).unwrap();
+                    }
                 }
                 let mut target = display.draw();
                 target.clear_color(0.02, 0.02, 0.02, 1.0);
@@ -198,6 +201,11 @@ fn main() {
                     _ => {}
                 }
             },
+            Event::DeviceEvent {
+                ..
+            } => {
+                //dbg!(event);
+            },
             _ => {
                 if is_focused {
                     *control_flow = ControlFlow::Poll;
@@ -247,88 +255,91 @@ impl glium::uniforms::AsUniformValue for Matrix4Wrapper {
 }
 
 fn file_dropped(file_path: PathBuf, display: &glium::Display, vertex_data: Arc<Mutex<VertexData>>, indices: &mut glium::index::IndexBuffer<u32>) {
-    if let Some(ext) = file_path.extension() {
-        if ext != "obj" {
-            return;
-        }
-        println!("opening {:?}", file_path.file_name());
-        let obj = read_obj(file_path);
-        let mut verts = Vec::with_capacity(obj.geometry[0].shapes.len() * 3);
-        let mut indices_vec: Vec<u32> = Vec::new();
-        let mut map = HashMap::new();
-        let mut i = 0;
-        for shape in &obj.geometry[0].shapes {
-            if let Primitive::Triangle(a, b, c) = shape.primitive {
-                for index in &[a, b, c] {
-                    if !map.contains_key(&(index.0, index.2.unwrap())) {
-                        map.insert((index.0, index.2.unwrap()), i);
-                        let vert_a = obj.vertices[index.0];
-                        let norm_a = obj.normals[index.2.unwrap()];
-                        let vert = Vertex{
-                            color: [1.0; 3],
-                            pos: [vert_a.x as f32, vert_a.y as f32, vert_a.z as f32],
-                            normal: [norm_a.x as f32, norm_a.y as f32, norm_a.z as f32]
-                        };
-                        verts.push(vert);
-                        indices_vec.push(i);
-                        i += 1;
-                    } else {
-                        indices_vec.push(map[&(index.0, index.2.unwrap())]);
-                    }
-                }
-            }
-        }
-        *indices = glium::index::IndexBuffer::new(display, PrimitiveType::TrianglesList, &indices_vec).unwrap();
-        vertex_data.lock().unwrap().update(verts.to_owned());
-        display.gl_window().window().request_redraw();
-        thread::spawn(move || {
-            let time = Instant::now();
-            let mut rng = thread_rng();
-            let spread = ANGLE_SPREAD / 180.0 * std::f32::consts::PI;
+    let ext = file_path.extension().unwrap_or_default();
+    if ext != "obj" {
+        return;
+    }
+    println!("opening {:?}", file_path.file_name());
+    let obj = read_obj(file_path);
+    let (mut verts, indices_vec) = generate_vector_buffer(&obj);
+    *indices = glium::index::IndexBuffer::new(display, PrimitiveType::TrianglesList, &indices_vec).unwrap();
+    vertex_data.lock().unwrap().update(verts.to_owned());
+    display.gl_window().window().request_redraw();
+    thread::spawn(move || {
+        let time = Instant::now();
+        let mut rng = thread_rng();
+        let spread = ANGLE_SPREAD / 180.0 * std::f32::consts::PI;
 
-            let mut lines = Vec::with_capacity(SAMPLES as usize);
-            for _ in 0..SAMPLES {
-                lines.push(get_random_ray(spread, &mut rng));
-            }
+        for sample in 0..SAMPLES {
+            let line = get_random_ray(spread, &mut rng);
             for vert in &mut verts {
-                let mut hits = 0;
+                let mut is_hit = false;
 
                 let offset = Vector3::from(vert.normal) * 0.03;
                 let orig = Vector3::from(vert.pos) + offset;
                 let q = Quaternion::from_arc(vec3(0.0, 0.0, 1.0), vert.normal.into(), None);
                 let mat = Matrix3::from(q);
 
-                for line in &lines {
-                    let line = mat * line;
-                    for shape in &obj.geometry[0].shapes {
-                        let shape = if let Primitive::Triangle(a, b, c) = shape.primitive {
-                            let v0 = vec3(obj.vertices[a.0].x as f32, obj.vertices[a.0].y as f32, obj.vertices[a.0].z as f32);
-                            let v1 = vec3(obj.vertices[b.0].x as f32, obj.vertices[b.0].y as f32, obj.vertices[b.0].z as f32);
-                            let v2 = vec3(obj.vertices[c.0].x as f32, obj.vertices[c.0].y as f32, obj.vertices[c.0].z as f32);
-                            [v0, v1, v2]
-                        } else {
-                            continue
-                        };
+                let line = mat * line;
+                for shape in &obj.geometry[0].shapes {
+                    let shape = if let Primitive::Triangle(a, b, c) = shape.primitive {
+                        let v0 = vec3(obj.vertices[a.0].x as f32, obj.vertices[a.0].y as f32, obj.vertices[a.0].z as f32);
+                        let v1 = vec3(obj.vertices[b.0].x as f32, obj.vertices[b.0].y as f32, obj.vertices[b.0].z as f32);
+                        let v2 = vec3(obj.vertices[c.0].x as f32, obj.vertices[c.0].y as f32, obj.vertices[c.0].z as f32);
+                        [v0, v1, v2]
+                    } else {
+                        continue
+                    };
 
-                        let is_hit = ray_triangle_intersect(orig, line, shape);
+                    is_hit = ray_triangle_intersect(orig, line, shape);
 
-                        if is_hit {
-                            hits += 1;
-                            break;
-                        }
+                    if is_hit {
+                        break;
                     }
                 }
-                if hits != 0 {
-                    let color = 1.0 - (hits as f32 / SAMPLES as f32);
-                    vert.color = [color; 3];
-                    continue;
+                let old_color = vert.color[0];
+                let new_color = if is_hit {
+                    (old_color * sample as f32)/(sample as f32 + 1.0)
+                } else {
+                    (old_color * sample as f32 + 1.0)/(sample as f32 + 1.0)
+                };
+                vert.color = [new_color; 3];
+            }
+            vertex_data.lock().unwrap().update(verts.to_owned());
+        }
+        //vertex_data.lock().unwrap().update(verts);
+        let time = time.elapsed();
+        println!("comp finished in {} secs", time.as_secs_f64());
+    });
+}
+
+fn generate_vector_buffer(obj: &Object) -> (Vec<Vertex>, Vec<u32>) {
+    let mut verts = Vec::with_capacity(obj.geometry[0].shapes.len() * 3);
+    let mut indices_vec = Vec::new();
+    let mut map = HashMap::new();
+    let mut i = 0;
+    for shape in &obj.geometry[0].shapes {
+        if let Primitive::Triangle(a, b, c) = shape.primitive {
+            for index in &[a, b, c] {
+                if !map.contains_key(&(index.0, index.2.unwrap())) {
+                    map.insert((index.0, index.2.unwrap()), i);
+                    let vert_a = obj.vertices[index.0];
+                    let norm_a = obj.normals[index.2.unwrap()];
+                    let vert = Vertex {
+                        color: [1.0; 3],
+                        pos: [vert_a.x as f32, vert_a.y as f32, vert_a.z as f32],
+                        normal: [norm_a.x as f32, norm_a.y as f32, norm_a.z as f32]
+                    };
+                    verts.push(vert);
+                    indices_vec.push(i);
+                    i += 1;
+                } else {
+                    indices_vec.push(map[&(index.0, index.2.unwrap())]);
                 }
             }
-            vertex_data.lock().unwrap().update(verts);
-            let time = time.elapsed();
-            println!("comp finished in {} secs", time.as_secs_f64());
-        });
+        }
     }
+    (verts, indices_vec)
 }
 
 fn read_obj(filename: PathBuf) -> Object {

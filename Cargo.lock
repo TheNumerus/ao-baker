@@ -25,6 +25,7 @@ dependencies = [
  "cgmath 0.17.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "glium 0.26.0-alpha6 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rusttype 0.8.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "wavefront_obj 7.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 

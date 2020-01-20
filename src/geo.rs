@@ -13,6 +13,14 @@ pub struct Vertex {
 
 implement_vertex!(Vertex, pos, color, normal);
 
+#[derive(Clone, Copy, Debug)]
+pub struct VertexUV {
+    pub pos: [f32; 3],
+    pub uv: [f32; 2],
+}
+
+implement_vertex!(VertexUV, pos, uv);
+
 pub fn generate_vector_buffer(obj: &Object) -> (Vec<Vertex>, Vec<u32>) {
     let mut verts = Vec::with_capacity(obj.geometry[0].shapes.len() * 3);
     let mut indices_vec = Vec::new();

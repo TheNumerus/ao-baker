@@ -8,8 +8,7 @@ pub fn get_random_ray(angle_spread: f32, rng: &mut ThreadRng) -> Vector3<f32> {
     let angle = rng.gen_range((angle_spread / 2.0).cos(), 1.0);
     let rot = rng.gen_range(0.0, std::f32::consts::PI * 2.0);
     let one_minus_z = (1.0 - (angle).powi(2)).sqrt();
-    let vec = vec3(one_minus_z * rot.cos(), one_minus_z * rot.sin(), angle);
-    vec
+    vec3(one_minus_z * rot.cos(), one_minus_z * rot.sin(), angle)
 }
 
 pub fn ray_triangle_intersect(orig: Vector3<f32>, dir: Vector3<f32>, vertices: [Vector3<f32>; 3]) -> bool {

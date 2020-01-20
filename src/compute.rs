@@ -13,7 +13,7 @@ use rand::thread_rng;
 
 use cgmath::{Vector3, Quaternion, vec3, Matrix3};
 
-pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: Vec<Vertex>) {
+pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: Vec<Vertex>, bake_in_progress: Arc<Mutex<bool>>) {
     thread::spawn(move || {
         let time = Instant::now();
         let mut rng = thread_rng();
@@ -62,5 +62,6 @@ pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: V
         }
         let time = time.elapsed();
         println!("comp finished in {} secs", time.as_secs_f64());
+        *bake_in_progress.lock().unwrap() = false;
     });
 }

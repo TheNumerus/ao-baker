@@ -9,12 +9,13 @@ use crate::io::read_obj;
 use crate::compute::compute_ao;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct Window {
     renderer: Renderer,
     is_mouse_pressed: bool,
-    is_focused: bool
+    is_focused: bool,
+    bake_in_progress: Arc<Mutex<bool>>
 }
 
 impl Window {
@@ -27,7 +28,8 @@ impl Window {
         Window {
             renderer,
             is_mouse_pressed: false,
-            is_focused: false
+            is_focused: false,
+            bake_in_progress: Arc::new(Mutex::new(false))
         }
     }
 
@@ -90,6 +92,14 @@ impl Window {
     }
 
     fn file_dropped(&mut self, file_path: PathBuf) {
+        {
+            let mut lock = self.bake_in_progress.lock().unwrap();
+            if *lock {
+                return;
+            } else {
+                *lock = true;
+            }
+        }
         let ext = file_path.extension().unwrap_or_default();
         if ext != "obj" {
             return;
@@ -99,6 +109,6 @@ impl Window {
         let (verts, indices) = generate_vector_buffer(&obj);
         self.renderer.update_mesh_data(verts.to_owned(), indices);
         self.renderer.request_redraw();
-        compute_ao(Arc::clone(&self.renderer.mesh_vdata), obj, verts);
+        compute_ao(Arc::clone(&self.renderer.mesh_vdata), obj, verts, Arc::clone(&self.bake_in_progress));
     }
 }

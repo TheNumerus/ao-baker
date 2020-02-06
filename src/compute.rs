@@ -5,19 +5,27 @@ use std::thread;
 use crate::render::VertexData;
 use crate::geo::Vertex;
 use crate::consts::*;
-use crate::math::*;
 
-use wavefront_obj::obj::{Object, Primitive};
+use wavefront_obj::obj::{Object, Primitive, Shape, Vertex as ObjVertex};
 
 use rand::thread_rng;
+use rand::prelude::*;
 
-use cgmath::{Vector3, Quaternion, vec3, Matrix3};
+use cgmath::{Vector3, Quaternion, vec3, Matrix3, prelude::*};
+
+use std::ops::{IndexMut, Index};
+use std::io::Write;
 
 pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: Vec<Vertex>, bake_in_progress: Arc<Mutex<bool>>) {
     thread::spawn(move || {
-        let time = Instant::now();
+        //let time = Instant::now();
+        let mut time = 0.0_f64;
         let mut rng = thread_rng();
         let spread = ANGLE_SPREAD / 180.0 * std::f32::consts::PI;
+
+        let mut stdout =  std::io::stdout();
+
+        let grid = AABBGrid::new(&verts, &obj.geometry[0].shapes, &obj.vertices);
 
         for sample in 0..SAMPLES {
             let sample_time = Instant::now();
@@ -31,20 +39,29 @@ pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: V
                 let mat = Matrix3::from(q);
 
                 let line = mat * line;
-                for shape in &obj.geometry[0].shapes {
-                    let shape = if let Primitive::Triangle(a, b, c) = shape.primitive {
-                        let v0 = vec3(obj.vertices[a.0].x as f32, obj.vertices[a.0].y as f32, obj.vertices[a.0].z as f32);
-                        let v1 = vec3(obj.vertices[b.0].x as f32, obj.vertices[b.0].y as f32, obj.vertices[b.0].z as f32);
-                        let v2 = vec3(obj.vertices[c.0].x as f32, obj.vertices[c.0].y as f32, obj.vertices[c.0].z as f32);
-                        [v0, v1, v2]
-                    } else {
-                        continue
+                let cells = grid.traverse(&orig, &line);
+                'cells: for cell in &cells {
+                    let cell = &grid[*cell];
+                    let cell = match cell {
+                        Some(val) => val,
+                        None => continue
                     };
+                    for shape in cell {
+                        let shape = &obj.geometry[0].shapes[*shape];
+                        let shape = if let Primitive::Triangle(a, b, c) = shape.primitive {
+                            let v0 = vec3(obj.vertices[a.0].x as f32, obj.vertices[a.0].y as f32, obj.vertices[a.0].z as f32);
+                            let v1 = vec3(obj.vertices[b.0].x as f32, obj.vertices[b.0].y as f32, obj.vertices[b.0].z as f32);
+                            let v2 = vec3(obj.vertices[c.0].x as f32, obj.vertices[c.0].y as f32, obj.vertices[c.0].z as f32);
+                            [v0, v1, v2]
+                        } else {
+                            continue
+                        };
 
-                    is_hit = ray_triangle_intersect(orig, line, shape);
+                        is_hit = ray_triangle_intersect(orig, line, shape).is_some();
 
-                    if is_hit {
-                        break;
+                        if is_hit {
+                            break 'cells;
+                        }
                     }
                 }
                 let old_color = vert.color[0];
@@ -55,13 +72,358 @@ pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: V
                 };
                 vert.color = [new_color; 3];
             }
-            let sample_time = sample_time.elapsed().as_secs_f64();
-            let rays = verts.len() as f64;
-            println!("{:.3} krays/s,  ETA: {:.1} secs", rays / sample_time / 1_000.0, sample_time * (SAMPLES - sample) as f64);
-            vertex_data.lock().unwrap().update(verts.to_owned());
+            time += sample_time.elapsed().as_secs_f64();
+
+            let rays =  (((sample + 1) as usize) * verts.len()) as f64;
+
+            print!("\x1B[2KAverage {:.3} krays/s,  ETA: {:.1} secs\r", rays / time / 1_000.0, time * (SAMPLES as f64 / sample as f64) - time);
+            stdout.flush().unwrap();
+            if let Ok(mut guard) = vertex_data.try_lock() {
+                guard.update(verts.to_owned());
+            }
         }
-        let time = time.elapsed();
-        println!("comp finished in {} secs", time.as_secs_f64());
+        println!("\ncomp finished in {:.3} secs", time);
+        vertex_data.lock().unwrap().update(verts.to_owned());
         *bake_in_progress.lock().unwrap() = false;
     });
+}
+
+fn find_extrema(verts: &[Vertex]) -> [f32; 6] {
+    let mut min_x = std::f32::MAX;
+    let mut min_y = std::f32::MAX;
+    let mut min_z = std::f32::MAX;
+
+    let mut max_x = std::f32::MIN;
+    let mut max_y = std::f32::MIN;
+    let mut max_z = std::f32::MIN;
+
+    for vert in verts {
+        if vert.pos[0] < min_x {
+            min_x = vert.pos[0];
+        }
+        if vert.pos[1] < min_y {
+            min_y = vert.pos[1];
+        }
+        if vert.pos[2] < min_z {
+            min_z = vert.pos[2];
+        }
+
+        if vert.pos[0] > max_x {
+            max_x = vert.pos[0];
+        }
+        if vert.pos[1] > max_y {
+            max_y = vert.pos[1];
+        }
+        if vert.pos[2] > max_z {
+            max_z = vert.pos[2];
+        }
+    }
+    [min_x, min_y, min_z, max_x, max_y, max_z]
+}
+
+fn find_extrema_triangle(a: &ObjVertex, b: &ObjVertex, c: &ObjVertex) -> [f32; 6] {
+    let mut min_x = a.x;
+    let mut min_y = a.y;
+    let mut min_z = a.z;
+
+    let mut max_x = a.x;
+    let mut max_y = a.y;
+    let mut max_z = a.z;
+
+    for vert in &[b, c] {
+        if vert.x < min_x {
+            min_x = vert.x;
+        }
+        if vert.y < min_y {
+            min_y = vert.y;
+        }
+        if vert.z < min_z {
+            min_z = vert.z;
+        }
+
+        if vert.x > max_x {
+            max_x = vert.x;
+        }
+        if vert.y > max_y {
+            max_y = vert.y;
+        }
+        if vert.z > max_z {
+            max_z = vert.z;
+        }
+    }
+    [min_x as f32, min_y as f32, min_z as f32, max_x as f32, max_y as f32, max_z as f32]
+}
+
+fn get_grid_dimensions(triangle_len: usize, size_x: f32, size_y: f32, size_z: f32) -> (usize, usize, usize) {
+    debug_assert!(size_x > 0.0);
+    debug_assert!(size_y > 0.0);
+    debug_assert!(size_z > 0.0);
+    let cube_root = (triangle_len as f32).powf(1.0 / 3.0) / 2.0 * 3.0;
+    let size_sum = size_x + size_y + size_z;
+    let ratio = cube_root / size_sum;
+    let x = (size_x * ratio).round() as usize;
+    let y = (size_y * ratio).round() as usize;
+    let z = (size_z * ratio).round() as usize;
+    (x, y, z)
+}
+
+fn map_pos_to_grid(pos: f32, divs: usize, min: f32, max: f32) -> usize {
+    if pos >= max {
+        divs - 1
+    } else if pos <= min {
+        0
+    } else {
+        let delta = max - min;
+        let index = ((pos - min) * (divs as f32 / delta)).floor();
+        index as usize
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AABBGrid {
+    bounds: BoundBox,
+    x_divs: usize,
+    y_divs: usize,
+    z_divs: usize,
+    grid: Vec<Option<Vec<usize>>>
+}
+
+impl AABBGrid {
+    fn new(verts: &[Vertex], shapes: &[Shape], obj_verts: &[ObjVertex]) -> Self {
+        let time = Instant::now();
+
+        let extrema = find_extrema(verts);
+
+        let size_x = extrema[3] - extrema[0];
+        let size_y = extrema[4] - extrema[1];
+        let size_z = extrema[5] - extrema[2];
+
+        let dim = get_grid_dimensions(shapes.len(), size_x, size_y, size_z);
+
+        let grid = vec![None; dim.0 * dim.1 * dim.2];
+
+        let mut aabb_grid = AABBGrid {
+            bounds: BoundBox {
+                min: [extrema[0], extrema[1], extrema[2]],
+                max: [extrema[3], extrema[4], extrema[5]]
+            },
+            x_divs: dim.0,
+            y_divs: dim.1,
+            z_divs: dim.2,
+            grid
+        };
+
+        for (index, shape) in shapes.iter().enumerate() {
+            if let Primitive::Triangle(a, b, c) = shape.primitive {
+                let vert_extrema = find_extrema_triangle(&obj_verts[a.0], &obj_verts[b.0], &obj_verts[c.0]);
+                let min_index_x = map_pos_to_grid(vert_extrema[0], dim.0, extrema[0], extrema[3]);
+                let min_index_y = map_pos_to_grid(vert_extrema[1], dim.1, extrema[1], extrema[4]);
+                let min_index_z = map_pos_to_grid(vert_extrema[2], dim.2, extrema[2], extrema[5]);
+                let max_index_x = map_pos_to_grid(vert_extrema[3], dim.0, extrema[0], extrema[3]);
+                let max_index_y = map_pos_to_grid(vert_extrema[4], dim.1, extrema[1], extrema[4]);
+                let max_index_z = map_pos_to_grid(vert_extrema[5], dim.2, extrema[2], extrema[5]);
+                for x in min_index_x..=max_index_x {
+                    for y in min_index_y..=max_index_y {
+                        for z in min_index_z..=max_index_z {
+                            match &mut aabb_grid[(x, y, z)] {
+                                Some(vec) => {
+                                    vec.push(index);
+                                },
+                                None => {
+                                    aabb_grid[(x, y, z)] = Some(vec![index]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let time = time.elapsed().as_secs_f64();
+        println!("precompute took {:.03} secs", time);
+
+        aabb_grid
+    }
+
+    fn max_dist(&self) -> f32 {
+        let delta_x = (self.bounds.max[0] - self.bounds.min[0]).powi(2);
+        let delta_y = (self.bounds.max[1] - self.bounds.min[1]).powi(2);
+        let delta_z = (self.bounds.max[2] - self.bounds.min[2]).powi(2);
+        ((delta_x + delta_y).sqrt() + delta_z).sqrt() + 1.0
+    }
+
+    fn traverse(&self, origin: &Vector3<f32>, dir: &Vector3<f32>) -> Vec<(usize, usize, usize)> {
+        let mut vec = Vec::new();
+        //let x = map_pos_to_grid(origin.x, self.x_divs, self.min_x, self.max_x);
+        //let y = map_pos_to_grid(origin.y, self.y_divs, self.min_y, self.max_y);
+        //let z = map_pos_to_grid(origin.z, self.z_divs, self.min_z, self.max_z);
+        //vec.push((x, y, z));
+
+
+        let inv_dir: Vector3<f32> = 1.0 / dir;
+        let sign = [dir.x > 0.0, dir.y > 0.0, dir.z > 0.0];
+
+        let t_hit = match self.bounds.intersect(&origin, &inv_dir, &sign) {
+            Some(v) => v,
+            None => return vec
+        };
+
+        let origin = [origin.x, origin.y, origin.z];
+        let inv_dir = [inv_dir.x, inv_dir.y, inv_dir.z];
+        let mut deltas = [0.0; 3];
+        let mut next_cross = [0.0; 3];
+
+        let cell_sizes = [
+            (self.bounds.max[0] - self.bounds.min[0]) / self.x_divs as f32,
+            (self.bounds.max[1] - self.bounds.min[1]) / self.y_divs as f32,
+            (self.bounds.max[2] - self.bounds.min[2]) / self.z_divs as f32
+        ];
+
+        let res = [self.x_divs as i32, self.y_divs as i32, self.z_divs as i32];
+
+        let mut exit = [0; 3];
+        let mut cell = [0; 3];
+        let mut step = [0; 3];
+
+        for i in 0..3 {
+            let ray_orig_cell = (origin[i] + dir[i] * t_hit) - self.bounds.min[i];
+            cell[i] = (ray_orig_cell / cell_sizes[i]).floor().max(0.0).min(res[i] as f32 - 1.0) as i32;
+            if sign[i] {
+                deltas[i] = cell_sizes[i] * inv_dir[i];
+                next_cross[i] = t_hit + ((cell[i] + 1) as f32 * cell_sizes[i] - ray_orig_cell) * inv_dir[i];
+                exit[i] = res[i];
+                step[i] = 1;
+            } else {
+                deltas[i] = -cell_sizes[i] * inv_dir[i];
+                next_cross[i] = t_hit + (cell[i] as f32 * cell_sizes[i] - ray_orig_cell) * inv_dir[i];
+                exit[i] = -1;
+                step[i] = -1;
+            }
+        }
+
+        loop {
+            vec.push((cell[0] as usize, cell[1] as usize, cell[2] as usize));
+            let k = (((next_cross[0] < next_cross[1]) as usize) << 2) +
+                    (((next_cross[0] < next_cross[2]) as usize) << 1) +
+                    ((next_cross[1] < next_cross[2]) as usize);
+
+            let axis = MAP[k];
+
+            if self.max_dist() < next_cross[axis] {
+                break
+            }
+
+            cell[axis] += step[axis];
+
+            if cell[axis] == exit[axis] {
+                break
+            }
+            next_cross[axis] += deltas[axis];
+        }
+
+        vec
+    }
+}
+
+impl Index<(usize, usize, usize)> for AABBGrid {
+    type Output = Option<Vec<usize>>;
+
+    fn index(&self, index: (usize, usize, usize)) -> &Self::Output {
+        let (x, y, z) = index;
+        let index = x + y * self.x_divs + z * self.x_divs * self.y_divs;
+        &self.grid[index]
+    }
+}
+
+impl IndexMut<(usize, usize, usize)> for AABBGrid {
+    fn index_mut(&mut self, index: (usize, usize, usize)) -> &mut Self::Output {
+        let (x, y, z) = index;
+        let index = x + y * self.x_divs + z * self.x_divs * self.y_divs;
+        &mut self.grid[index]
+    }
+}
+
+pub fn get_random_ray(angle_spread: f32, rng: &mut ThreadRng) -> Vector3<f32> {
+    debug_assert!(angle_spread > 0.0);
+    debug_assert!(angle_spread < std::f32::consts::PI);
+
+    let angle = rng.gen_range((angle_spread / 2.0).cos(), 1.0);
+    let rot = rng.gen_range(0.0, std::f32::consts::PI * 2.0);
+    let one_minus_z = (1.0 - (angle).powi(2)).sqrt();
+    vec3(one_minus_z * rot.cos(), one_minus_z * rot.sin(), angle)
+}
+
+pub fn ray_triangle_intersect(orig: Vector3<f32>, dir: Vector3<f32>, vertices: [Vector3<f32>; 3]) -> Option<f32> {
+    let v0v1 = vertices[1] - vertices[0];
+    let v0v2 = vertices[2] - vertices[0];
+    let pvec = dir.cross(v0v2);
+    let det = v0v1.dot(pvec);
+    if det.abs() < std::f32::EPSILON {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+
+    let tvec = orig - vertices[0];
+    let u = tvec.dot(pvec) * inv_det;
+    if u < 0.0 || u > 1.0 {
+        return None;
+    }
+
+    let qvec = tvec.cross(v0v1);
+    let v = dir.dot(qvec) * inv_det;
+
+    if v < 0.0 || (u + v) > 1.0 {
+        return None;
+    }
+
+    let t = v0v2.dot(qvec) * inv_det;
+
+    if t >= 0.0 {
+        Some(t)
+    } else {
+        None
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+struct BoundBox {
+    min: [f32; 3],
+    max: [f32; 3]
+}
+
+impl BoundBox {
+    pub fn intersect(&self, orig: &Vector3<f32>, inv_dir: &Vector3<f32>, sign: &[bool; 3]) -> Option<f32> {
+        let sign = [sign[0] as usize, sign[1] as usize, sign[2] as usize];
+        let bounds = [self.min, self.max];
+
+        let mut tmin  = (bounds[1 - sign[0]][0] - orig.x) * inv_dir.x;
+        let mut tmax  = (bounds[sign[0]][0] - orig.x) * inv_dir.x;
+        let tymin = (bounds[1 - sign[1]][1] - orig.y) * inv_dir.y;
+        let tymax = (bounds[sign[1]][1] - orig.y) * inv_dir.y;
+
+        if (tmin > tymax) || (tymin > tmax) {
+            return None;
+        }
+
+        if tymin > tmin {
+            tmin = tymin;
+        }
+
+        if tymax < tmax {
+            tmax = tymax;
+        }
+
+        let tzmin = (bounds[1 - sign[2]][2] - orig.z) * inv_dir.z;
+        let tzmax = (bounds[sign[2]][2] - orig.z) * inv_dir.z;
+
+        if (tmin > tzmax) || (tzmin > tmax) {
+            return None;
+        }
+
+        if tzmin > tmin {
+            tmin = tzmin;
+        }
+
+        Some(tmin)
+    }
 }

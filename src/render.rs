@@ -156,6 +156,10 @@ impl Renderer {
         self.display.gl_window().window().request_redraw();
     }
 
+    pub fn set_window_title(&self, title: &str) {
+        self.display.gl_window().window().set_title(title);
+    }
+
     pub fn update_aspect_ratio(&mut self, new_size: LogicalSize) {
         let aspect_ratio = new_size.width / new_size.height;
         self.view_matrix = perspective( Deg(60.0), aspect_ratio as f32, 0.01_f32, 100.0_f32);

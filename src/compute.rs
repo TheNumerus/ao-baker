@@ -16,7 +16,8 @@ use cgmath::{Vector3, Quaternion, vec3, Matrix3, prelude::*};
 use std::ops::{IndexMut, Index};
 use std::io::Write;
 
-pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: Vec<Vertex>, bake_in_progress: Arc<Mutex<bool>>) {
+pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: Vec<Vertex>, bake_in_progress: Arc<Mutex<bool>>, compute_data: &ComputeData) {
+    let compute_data = compute_data.clone();
     thread::spawn(move || {
         //let time = Instant::now();
         let mut time = 0.0_f64;
@@ -27,7 +28,7 @@ pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: V
 
         let grid = AABBGrid::new(&verts, &obj.geometry[0].shapes, &obj.vertices);
 
-        for sample in 0..SAMPLES {
+        for sample in 0..compute_data.samples {
             let sample_time = Instant::now();
             let line = get_random_ray(spread, &mut rng);
             for vert in &mut verts {
@@ -76,7 +77,7 @@ pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: V
 
             let rays =  (((sample + 1) as usize) * verts.len()) as f64;
 
-            print!("\x1B[2KAverage {:.3} krays/s,  ETA: {:.1} secs\r", rays / time / 1_000.0, time * (SAMPLES as f64 / sample as f64) - time);
+            print!("\x1B[2KAverage {:.3} krays/s,  ETA: {:.1} secs\r", rays / time / 1_000.0, time * (compute_data.samples as f64 / sample as f64) - time);
             stdout.flush().unwrap();
             if let Ok(mut guard) = vertex_data.try_lock() {
                 guard.update(verts.to_owned());
@@ -425,5 +426,20 @@ impl BoundBox {
         }
 
         Some(tmin)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ComputeData {
+    max_ray_dist: f32,
+    samples: u32
+}
+
+impl Default for ComputeData {
+    fn default() -> Self {
+        ComputeData{
+            max_ray_dist: std::f32::MAX,
+            samples: SAMPLES
+        }
     }
 }

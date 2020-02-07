@@ -9,13 +9,14 @@ pub const UP_VECTOR: Vector3<f32> = vec3(0.0, 1.0, 0.0);
 
 /// consts for computations
 pub const ANGLE_SPREAD: f32 = 178.0;
-pub const SAMPLES: u32 = 256;
+pub const SAMPLES: u32 = 512;
 pub const MAP: [usize; 8] = [2, 1, 2, 1, 2, 2, 0, 0];
 
 /// consts for window management
 pub const SIZE_X: u32 = 1280;
 pub const SIZE_Y: u32 = 720;
 pub const ASPECT_RATIO: f32 = 1280.0_f32 / 720.0;
+pub const APP_NAME: &str = "AO Baker";
 
 /// consts for rendering
 pub const FONT_BYTES: &[u8] = include_bytes!("../fonts/Roboto.ttf");

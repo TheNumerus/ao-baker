@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 pub struct Window {
     renderer: Renderer,
     is_mouse_pressed: bool,
+    is_middle_mouse_pressed: bool,
     is_focused: bool,
     bake_in_progress: Arc<Mutex<bool>>,
     compute_data: ComputeData
@@ -29,6 +30,7 @@ impl Window {
         Window {
             renderer,
             is_mouse_pressed: false,
+            is_middle_mouse_pressed: false,
             is_focused: false,
             bake_in_progress: Arc::new(Mutex::new(false)),
             compute_data: ComputeData::default()
@@ -68,6 +70,12 @@ impl Window {
                                 glium::glutin::event::ElementState::Released => self.is_mouse_pressed = false,
                             }
                         }
+                        if let glium::glutin::event::MouseButton::Middle = button {
+                            match state {
+                                glium::glutin::event::ElementState::Pressed => self.is_middle_mouse_pressed = true,
+                                glium::glutin::event::ElementState::Released => self.is_middle_mouse_pressed = false,
+                            }
+                        }
                     },
                     WindowEvent::Focused(focus) => self.is_focused = focus,
                     WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
@@ -80,6 +88,8 @@ impl Window {
             } => {
                 if self.is_focused && self.is_mouse_pressed {
                     self.renderer.world_data.rotate_manual(delta);
+                } else if self.is_focused && self.is_middle_mouse_pressed {
+                    self.renderer.world_data.pan_manual(delta);
                 }
             },
             _ => {

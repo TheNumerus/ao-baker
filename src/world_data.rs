@@ -6,6 +6,7 @@ pub struct WorldData {
     circle: f32,
     camera_distance: f32,
     world_mat: Matrix4<f32>,
+    center: Point3<f32>,
     pub shading_enabled: bool,
     pub is_paused: bool,
     pub ao_enabled: bool,
@@ -20,7 +21,7 @@ impl WorldData {
         }
         let x = self.camera_distance * (1.0 - self.tilt.powi(2)).sqrt() * self.circle.sin();
         let z = self.camera_distance * (1.0 - self.tilt.powi(2)).sqrt() * self.circle.cos();
-        self.world_mat = Matrix4::look_at(Point3::new(x, self.tilt * self.camera_distance, z), CENTER, UP_VECTOR);
+        self.world_mat = Matrix4::look_at(Point3::new(x, self.tilt * self.camera_distance + self.center.y, z), self.center, UP_VECTOR);
     }
 
     pub fn rotate_manual(&mut self, (delta_x, delta_y): (f64, f64)) {
@@ -29,12 +30,16 @@ impl WorldData {
         self.tilt = self.tilt.max(-0.999).min(0.999);
         let x = self.camera_distance * (1.0 - self.tilt.powi(2)).sqrt() * self.circle.sin();
         let z = self.camera_distance * (1.0 - self.tilt.powi(2)).sqrt() * self.circle.cos();
-        self.world_mat = Matrix4::look_at(Point3::new(x, self.tilt * self.camera_distance, z), CENTER, UP_VECTOR);
+        self.world_mat = Matrix4::look_at(Point3::new(x, self.tilt * self.camera_distance + self.center.y, z), self.center, UP_VECTOR);
     }
 
     pub fn adjust_zoom(&mut self, delta: i32) {
         self.zoom_level += delta;
         self.camera_distance = CAMERA_DIST * 2.0_f32.powf(-self.zoom_level as f32 / 2.0);
+    }
+
+    pub fn pan_manual(&mut self, (delta_x, delta_y): (f64, f64)) {
+        self.center.y += delta_y as f32 / 50.0;
     }
 
     pub fn toggle_ao(&mut self) {
@@ -64,7 +69,8 @@ impl Default for WorldData {
             is_paused: false,
             ao_enabled: true,
             zoom_level: 0,
-            tilt: 0.0
+            tilt: 0.0,
+            center: CENTER
         }
     }
 }

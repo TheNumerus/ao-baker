@@ -15,8 +15,9 @@ use cgmath::{Vector3, Quaternion, vec3, Matrix3, prelude::*};
 
 use std::ops::{IndexMut, Index};
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: Vec<Vertex>, bake_in_progress: Arc<Mutex<bool>>, compute_data: &ComputeData) {
+pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: Vec<Vertex>, bake_in_progress: Arc<Mutex<bool>>, compute_data: &ComputeData, bake_stopper: Arc<AtomicBool>) {
     let compute_data = compute_data.clone();
     thread::spawn(move || {
         //let time = Instant::now();
@@ -29,6 +30,13 @@ pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: V
         let grid = AABBGrid::new(&verts, &obj.geometry[0].shapes, &obj.vertices);
 
         for sample in 0..compute_data.samples {
+            {
+                if bake_stopper.load(Ordering::SeqCst) {
+                    bake_stopper.store(false, Ordering::SeqCst);
+                    print!("\nBake aborted after {} samples", sample);
+                    break;
+                }
+            }
             let sample_time = Instant::now();
             let line = get_random_ray(spread, &mut rng);
             for vert in &mut verts {

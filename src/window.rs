@@ -10,6 +10,7 @@ use crate::compute::{compute_ao, ComputeData};
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct Window {
     renderer: Renderer,
@@ -17,6 +18,7 @@ pub struct Window {
     is_middle_mouse_pressed: bool,
     is_focused: bool,
     bake_in_progress: Arc<Mutex<bool>>,
+    bake_stopper: Arc<AtomicBool>,
     compute_data: ComputeData
 }
 
@@ -33,7 +35,8 @@ impl Window {
             is_middle_mouse_pressed: false,
             is_focused: false,
             bake_in_progress: Arc::new(Mutex::new(false)),
-            compute_data: ComputeData::default()
+            compute_data: ComputeData::default(),
+            bake_stopper: Arc::new(AtomicBool::new(false))
         }
     }
 
@@ -63,6 +66,13 @@ impl Window {
                             _ => {}
                         }
                     },
+                    WindowEvent::KeyboardInput {input, ..} => {
+                        if let Some(key) = input.virtual_keycode {
+                            if let glium::glutin::event::VirtualKeyCode::Escape = key {
+                                self.bake_stopper.store(true, Ordering::SeqCst)
+                            }
+                        }
+                    }
                     WindowEvent::MouseInput{button, state, ..} => {
                         if let glium::glutin::event::MouseButton::Left = button {
                             match state {
@@ -123,6 +133,6 @@ impl Window {
         let (verts, indices) = generate_vector_buffer(&obj);
         self.renderer.update_mesh_data(verts.to_owned(), indices);
         self.renderer.request_redraw();
-        compute_ao(Arc::clone(&self.renderer.mesh_vdata), obj, verts, Arc::clone(&self.bake_in_progress), &self.compute_data);
+        compute_ao(Arc::clone(&self.renderer.mesh_vdata), obj, verts, Arc::clone(&self.bake_in_progress), &self.compute_data, Arc::clone(&self.bake_stopper));
     }
 }

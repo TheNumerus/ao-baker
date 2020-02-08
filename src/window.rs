@@ -1,6 +1,6 @@
 use glium::glutin::event_loop::{EventLoop, ControlFlow};
 use glium::glutin::window::WindowBuilder;
-use glium::glutin::event::{Event, WindowEvent, MouseScrollDelta, DeviceEvent};
+use glium::glutin::event::{Event, WindowEvent, MouseScrollDelta, DeviceEvent, ElementState};
 
 use crate::consts::*;
 use crate::render::Renderer;
@@ -9,7 +9,7 @@ use crate::io::read_obj;
 use crate::compute::{compute_ao, ComputeData};
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct Window {
@@ -17,7 +17,7 @@ pub struct Window {
     is_mouse_pressed: bool,
     is_middle_mouse_pressed: bool,
     is_focused: bool,
-    bake_in_progress: Arc<Mutex<bool>>,
+    bake_in_progress: Arc<AtomicBool>,
     bake_stopper: Arc<AtomicBool>,
     compute_data: ComputeData
 }
@@ -34,7 +34,7 @@ impl Window {
             is_mouse_pressed: false,
             is_middle_mouse_pressed: false,
             is_focused: false,
-            bake_in_progress: Arc::new(Mutex::new(false)),
+            bake_in_progress: Arc::new(AtomicBool::new(false)),
             compute_data: ComputeData::default(),
             bake_stopper: Arc::new(AtomicBool::new(false))
         }
@@ -68,22 +68,24 @@ impl Window {
                     },
                     WindowEvent::KeyboardInput {input, ..} => {
                         if let Some(key) = input.virtual_keycode {
-                            if let glium::glutin::event::VirtualKeyCode::Escape = key {
-                                self.bake_stopper.store(true, Ordering::SeqCst)
+                            if let ElementState::Pressed = input.state {
+                                if let glium::glutin::event::VirtualKeyCode::Escape = key {
+                                    self.bake_stopper.store(true, Ordering::SeqCst)
+                                }
                             }
                         }
                     }
                     WindowEvent::MouseInput{button, state, ..} => {
                         if let glium::glutin::event::MouseButton::Left = button {
                             match state {
-                                glium::glutin::event::ElementState::Pressed => self.is_mouse_pressed = true,
-                                glium::glutin::event::ElementState::Released => self.is_mouse_pressed = false,
+                                ElementState::Pressed => self.is_mouse_pressed = true,
+                                ElementState::Released => self.is_mouse_pressed = false,
                             }
                         }
                         if let glium::glutin::event::MouseButton::Middle = button {
                             match state {
-                                glium::glutin::event::ElementState::Pressed => self.is_middle_mouse_pressed = true,
-                                glium::glutin::event::ElementState::Released => self.is_middle_mouse_pressed = false,
+                                ElementState::Pressed => self.is_middle_mouse_pressed = true,
+                                event::ElementState::Released => self.is_middle_mouse_pressed = false,
                             }
                         }
                     },
@@ -121,14 +123,10 @@ impl Window {
         println!("opening {:?}", file_path.file_name());
         let name = format!("{} <{}>", APP_NAME, file_path.file_name().unwrap().to_str().unwrap());
         self.renderer.set_window_title(&name);
-        {
-            let mut lock = self.bake_in_progress.lock().unwrap();
-            if *lock {
-                return;
-            } else {
-                *lock = true;
-            }
+        if self.bake_in_progress.load(Ordering::SeqCst) {
+            return;
         }
+        self.bake_in_progress.store(true, Ordering::SeqCst);
         let obj = read_obj(file_path);
         let (verts, indices) = generate_vector_buffer(&obj);
         self.renderer.update_mesh_data(verts.to_owned(), indices);

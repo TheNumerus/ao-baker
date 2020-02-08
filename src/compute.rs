@@ -1,6 +1,9 @@
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use std::thread;
+use std::ops::{IndexMut, Index};
+use std::io::Write;
 
 use crate::render::VertexData;
 use crate::geo::Vertex;
@@ -13,11 +16,7 @@ use rand::prelude::*;
 
 use cgmath::{Vector3, Quaternion, vec3, Matrix3, prelude::*};
 
-use std::ops::{IndexMut, Index};
-use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: Vec<Vertex>, bake_in_progress: Arc<Mutex<bool>>, compute_data: &ComputeData, bake_stopper: Arc<AtomicBool>) {
+pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: Vec<Vertex>, bake_in_progress: Arc<AtomicBool>, compute_data: &ComputeData, bake_stopper: Arc<AtomicBool>) {
     let compute_data = compute_data.clone();
     thread::spawn(move || {
         //let time = Instant::now();
@@ -30,12 +29,10 @@ pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: V
         let grid = AABBGrid::new(&verts, &obj.geometry[0].shapes, &obj.vertices);
 
         for sample in 0..compute_data.samples {
-            {
-                if bake_stopper.load(Ordering::SeqCst) {
-                    bake_stopper.store(false, Ordering::SeqCst);
-                    print!("\nBake aborted after {} samples", sample);
-                    break;
-                }
+            if bake_stopper.load(Ordering::SeqCst) {
+                bake_stopper.store(false, Ordering::SeqCst);
+                print!("\nBake aborted after {} samples", sample);
+                break;
             }
             let sample_time = Instant::now();
             let line = get_random_ray(spread, &mut rng);
@@ -87,13 +84,12 @@ pub fn compute_ao(vertex_data: Arc<Mutex<VertexData>>, obj: Object, mut verts: V
 
             print!("\x1B[2KAverage {:.3} krays/s,  ETA: {:.1} secs\r", rays / time / 1_000.0, time * (compute_data.samples as f64 / sample as f64) - time);
             stdout.flush().unwrap();
-            if let Ok(mut guard) = vertex_data.try_lock() {
-                guard.update(verts.to_owned());
-            }
+            let mut lock = vertex_data.lock().unwrap();
+            lock.update(verts.to_owned());
         }
         println!("\ncomp finished in {:.3} secs", time);
         vertex_data.lock().unwrap().update(verts.to_owned());
-        *bake_in_progress.lock().unwrap() = false;
+        bake_in_progress.store(false, Ordering::SeqCst);
     });
 }
 
@@ -163,19 +159,6 @@ fn find_extrema_triangle(a: &ObjVertex, b: &ObjVertex, c: &ObjVertex) -> [f32; 6
     [min_x as f32, min_y as f32, min_z as f32, max_x as f32, max_y as f32, max_z as f32]
 }
 
-fn get_grid_dimensions(triangle_len: usize, size_x: f32, size_y: f32, size_z: f32) -> (usize, usize, usize) {
-    debug_assert!(size_x > 0.0);
-    debug_assert!(size_y > 0.0);
-    debug_assert!(size_z > 0.0);
-    let cube_root = (triangle_len as f32).powf(1.0 / 3.0) / 2.0 * 3.0;
-    let size_sum = size_x + size_y + size_z;
-    let ratio = cube_root / size_sum;
-    let x = (size_x * ratio).round() as usize;
-    let y = (size_y * ratio).round() as usize;
-    let z = (size_z * ratio).round() as usize;
-    (x, y, z)
-}
-
 fn map_pos_to_grid(pos: f32, divs: usize, min: f32, max: f32) -> usize {
     if pos >= max {
         divs - 1
@@ -194,7 +177,8 @@ struct AABBGrid {
     x_divs: usize,
     y_divs: usize,
     z_divs: usize,
-    grid: Vec<Option<Vec<usize>>>
+    grid: Vec<Option<Vec<usize>>>,
+    max_dist: f32
 }
 
 impl AABBGrid {
@@ -207,30 +191,44 @@ impl AABBGrid {
         let size_y = extrema[4] - extrema[1];
         let size_z = extrema[5] - extrema[2];
 
-        let dim = get_grid_dimensions(shapes.len(), size_x, size_y, size_z);
+        let sizes = [size_x, size_y, size_z];
 
-        let grid = vec![None; dim.0 * dim.1 * dim.2];
+        let mut dim = [1; 3];
+        let cube_root = (shapes.len() as f32 * 4.0 / (size_x * size_y * size_z)).powf(1.0 / 3.0);
+        for i in 0..3 {
+            dim[i] = (cube_root * sizes[i]).floor() as usize;
+            if dim[i] > 128 {
+                dim[i] = 128;
+            } else if dim[i] < 1 {
+                dim[i] = 1;
+            }
+        }
+
+        let max_dist = ((size_x.powi(2) + size_y.powi(2)).sqrt() + size_z.powi(2)).sqrt() + 1.0;
+
+        let grid = vec![None; dim[0] * dim[1] * dim[2]];
 
         let mut aabb_grid = AABBGrid {
             bounds: BoundBox {
                 min: [extrema[0], extrema[1], extrema[2]],
                 max: [extrema[3], extrema[4], extrema[5]]
             },
-            x_divs: dim.0,
-            y_divs: dim.1,
-            z_divs: dim.2,
-            grid
+            x_divs: dim[0],
+            y_divs: dim[1],
+            z_divs: dim[2],
+            grid,
+            max_dist
         };
 
         for (index, shape) in shapes.iter().enumerate() {
             if let Primitive::Triangle(a, b, c) = shape.primitive {
                 let vert_extrema = find_extrema_triangle(&obj_verts[a.0], &obj_verts[b.0], &obj_verts[c.0]);
-                let min_index_x = map_pos_to_grid(vert_extrema[0], dim.0, extrema[0], extrema[3]);
-                let min_index_y = map_pos_to_grid(vert_extrema[1], dim.1, extrema[1], extrema[4]);
-                let min_index_z = map_pos_to_grid(vert_extrema[2], dim.2, extrema[2], extrema[5]);
-                let max_index_x = map_pos_to_grid(vert_extrema[3], dim.0, extrema[0], extrema[3]);
-                let max_index_y = map_pos_to_grid(vert_extrema[4], dim.1, extrema[1], extrema[4]);
-                let max_index_z = map_pos_to_grid(vert_extrema[5], dim.2, extrema[2], extrema[5]);
+                let min_index_x = map_pos_to_grid(vert_extrema[0], dim[0], extrema[0], extrema[3]);
+                let min_index_y = map_pos_to_grid(vert_extrema[1], dim[1], extrema[1], extrema[4]);
+                let min_index_z = map_pos_to_grid(vert_extrema[2], dim[2], extrema[2], extrema[5]);
+                let max_index_x = map_pos_to_grid(vert_extrema[3], dim[0], extrema[0], extrema[3]);
+                let max_index_y = map_pos_to_grid(vert_extrema[4], dim[1], extrema[1], extrema[4]);
+                let max_index_z = map_pos_to_grid(vert_extrema[5], dim[2], extrema[2], extrema[5]);
                 for x in min_index_x..=max_index_x {
                     for y in min_index_y..=max_index_y {
                         for z in min_index_z..=max_index_z {
@@ -254,19 +252,8 @@ impl AABBGrid {
         aabb_grid
     }
 
-    fn max_dist(&self) -> f32 {
-        let delta_x = (self.bounds.max[0] - self.bounds.min[0]).powi(2);
-        let delta_y = (self.bounds.max[1] - self.bounds.min[1]).powi(2);
-        let delta_z = (self.bounds.max[2] - self.bounds.min[2]).powi(2);
-        ((delta_x + delta_y).sqrt() + delta_z).sqrt() + 1.0
-    }
-
     fn traverse(&self, origin: &Vector3<f32>, dir: &Vector3<f32>) -> Vec<(usize, usize, usize)> {
-        let mut vec = Vec::new();
-        //let x = map_pos_to_grid(origin.x, self.x_divs, self.min_x, self.max_x);
-        //let y = map_pos_to_grid(origin.y, self.y_divs, self.min_y, self.max_y);
-        //let z = map_pos_to_grid(origin.z, self.z_divs, self.min_z, self.max_z);
-        //vec.push((x, y, z));
+        let mut vec = Vec::with_capacity(self.x_divs + self.y_divs + self.z_divs);
 
 
         let inv_dir: Vector3<f32> = 1.0 / dir;
@@ -318,7 +305,7 @@ impl AABBGrid {
 
             let axis = MAP[k];
 
-            if self.max_dist() < next_cross[axis] {
+            if self.max_dist < next_cross[axis] {
                 break
             }
 

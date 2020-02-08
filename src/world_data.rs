@@ -44,9 +44,11 @@ impl WorldData {
     pub fn pan_manual(&mut self, (delta_x, delta_y): (f64, f64)) {
         let camera_dir = (self.center - self.eye).normalize();
         let side = UP_VECTOR.cross(camera_dir);
+        let up = camera_dir.cross(side);
         self.eye += side * (delta_x as f32 / 50.0);
+        self.eye += up * (delta_y as f32 / 50.0);
         self.center += side * (delta_x as f32 / 50.0);
-        self.center.y += delta_y as f32 / 50.0;
+        self.center += up * (delta_y as f32 / 50.0);
         self.world_mat = Matrix4::look_at(self.eye, self.center, UP_VECTOR);
     }
 

@@ -85,7 +85,7 @@ impl Window {
                         if let glium::glutin::event::MouseButton::Middle = button {
                             match state {
                                 ElementState::Pressed => self.is_middle_mouse_pressed = true,
-                                event::ElementState::Released => self.is_middle_mouse_pressed = false,
+                                ElementState::Released => self.is_middle_mouse_pressed = false,
                             }
                         }
                     },

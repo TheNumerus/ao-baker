@@ -32,7 +32,9 @@ pub struct Renderer {
     draw_parameters: DrawParameters<'static>,
     quad_vbuffer: VertexBuffer<VertexUV>,
     tooltip_textures: Vec<Texture2d>,
-    tooltip_transform: Matrix3<f32>
+    tooltip_transform: Matrix3<f32>,
+    grid_vbuffer: VertexBuffer<Vertex>,
+    grid_program: Program
 }
 
 impl Renderer {
@@ -40,7 +42,7 @@ impl Renderer {
         let cb = glium::glutin::ContextBuilder::new().with_depth_buffer(16).with_srgb(false);
         let display = glium::Display::new(wb, cb, &event_loop).unwrap();
 
-        let (program, program_tooltip) = Self::make_programs(&display);
+        let (program, program_tooltip, grid_program) = Self::make_programs(&display);
 
         let mesh_vbuffer = glium::VertexBuffer::new(&display, &[]).unwrap();
         let mesh_vdata = Arc::new(Mutex::new(VertexData{data: Vec::new(), should_update: false}));
@@ -84,6 +86,8 @@ impl Renderer {
             0.0, 0.0, 1.0,
         );
 
+        let grid_vbuffer = Self::get_grid_buffer(&display);
+
         Renderer {
             display,
             program,
@@ -97,11 +101,44 @@ impl Renderer {
             draw_parameters,
             quad_vbuffer,
             tooltip_textures,
-            tooltip_transform
+            tooltip_transform,
+            grid_vbuffer,
+            grid_program,
         }
     }
 
+    fn get_grid_buffer(display: &Display) -> VertexBuffer<Vertex> {
+        let mut vec = Vec::with_capacity(21 * 4 * 2);
+        let line_width = 0.01;
+        let normal = [0.0, 1.0, 0.0];
+        let color = [0.0; 3];
+
+        for i in -10..=10 {
+            vec.push(Vertex{normal, color, pos: [i as f32 + line_width, 0.0, 10.0]});
+            vec.push(Vertex{normal, color, pos: [i as f32 - line_width, 0.0, -10.0]});
+            vec.push(Vertex{normal, color, pos: [i as f32 - line_width, 0.0, 10.0]});
+
+            vec.push(Vertex{normal, color, pos: [i as f32 + line_width, 0.0, 10.0]});
+            vec.push(Vertex{normal, color, pos: [i as f32 + line_width, 0.0, -10.0]});
+            vec.push(Vertex{normal, color, pos: [i as f32 - line_width, 0.0, -10.0]});
+
+            vec.push(Vertex{normal, color, pos: [10.0, 0.0, i as f32 + line_width]});
+            vec.push(Vertex{normal, color, pos: [10.0, 0.0, i as f32 - line_width]});
+            vec.push(Vertex{normal, color, pos: [-10.0, 0.0, i as f32 - line_width]});
+
+            vec.push(Vertex{normal, color, pos: [10.0, 0.0, i as f32 + line_width]});
+            vec.push(Vertex{normal, color, pos: [-10.0, 0.0, i as f32 - line_width,]});
+            vec.push(Vertex{normal, color, pos: [-10.0, 0.0, i as f32 + line_width]});
+        }
+
+        glium::VertexBuffer::new(display, &vec).unwrap()
+    }
+
     pub fn redraw(&mut self) {
+        let mut target = self.display.draw();
+        target.clear_color(0.02, 0.02, 0.02, 1.0);
+        target.clear_depth(1.0);
+
         self.world_data.rotate_delta(self.delta_timer.next_delta());
         {
             let lock = self.mesh_vdata.lock().unwrap();
@@ -109,9 +146,20 @@ impl Renderer {
                 self.mesh_vbuffer = glium::VertexBuffer::new(&self.display, &lock.data).unwrap();
             }
         }
-        let mut target = self.display.draw();
-        target.clear_color(0.02, 0.02, 0.02, 1.0);
-        target.clear_depth(1.0);
+
+        let grid_uniforms = uniform!(
+            view: Matrix4Wrapper(self.view_matrix),
+            world: Matrix4Wrapper(*self.world_data.world_mat())
+        );
+
+        target.draw(
+            &self.grid_vbuffer,
+            glium::index::NoIndices(PrimitiveType::TrianglesList),
+            &self.grid_program,
+            &grid_uniforms,
+            &self.draw_parameters
+        ).unwrap();
+
         let uniforms = uniform!(
             view: Matrix4Wrapper(self.view_matrix),
             world: Matrix4Wrapper(*self.world_data.world_mat()),
@@ -170,12 +218,15 @@ impl Renderer {
         self.mesh_vdata.lock().unwrap().update(data);
     }
 
-    fn make_programs(display: &Display) -> (Program, Program) {
+    fn make_programs(display: &Display) -> (Program, Program, Program) {
         let vert = include_str!("shaders/mesh.vert");
         let frag = include_str!("shaders/mesh.frag");
 
         let vert_tooltip = include_str!("shaders/tooltip.vert");
         let frag_tooltip = include_str!("shaders/tooltip.frag");
+
+        let vert_grid = include_str!("shaders/grid.vert");
+        let frag_grid = include_str!("shaders/grid.frag");
 
         let program_mesh = glium::Program::from_source(
             display,
@@ -191,7 +242,14 @@ impl Renderer {
             None
         ).unwrap();
 
-        (program_mesh, program_tooltip)
+        let grid_program = glium::Program::from_source(
+            display,
+            vert_grid,
+            frag_grid,
+            None
+        ).unwrap();
+
+        (program_mesh, program_tooltip, grid_program)
     }
 }
 

@@ -28,9 +28,10 @@ pub const QUAD: [VertexUV; 6] = [
     VertexUV{pos: [0.0, 0.0, 0.0], uv: [0.0, 0.0]},
     VertexUV{pos: [1.0, 1.0, 0.0], uv: [1.0, 1.0]}
 ];
-pub const TOOLTIPS: [&str; 4] = [
+pub const TOOLTIPS: [&str; 5] = [
     "P - toggle animation",
     "D - toggle shading",
     "F - toggle AO",
-    "Esc - end bake"
+    "Esc - end bake",
+    "G - toggle grid"
 ];

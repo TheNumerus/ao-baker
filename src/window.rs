@@ -63,6 +63,7 @@ impl Window {
                             'd' | 'D' => self.renderer.world_data.toggle_shading(),
                             'p' | 'P' => self.renderer.world_data.toggle_paused(),
                             'f' | 'F' => self.renderer.world_data.toggle_ao(),
+                            'g' | 'G' => self.renderer.world_data.toggle_grid(),
                             _ => {}
                         }
                     },

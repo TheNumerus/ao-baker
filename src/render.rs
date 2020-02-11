@@ -30,6 +30,7 @@ pub struct Renderer {
     view_matrix: Matrix4<f32>,
     delta_timer: DeltaTimer,
     draw_parameters: DrawParameters<'static>,
+    draw_grid_parameters: DrawParameters<'static>,
     quad_vbuffer: VertexBuffer<VertexUV>,
     tooltip_textures: Vec<Texture2d>,
     tooltip_transform: Matrix3<f32>,
@@ -67,6 +68,17 @@ impl Renderer {
             .. Default::default()
         };
 
+        let draw_grid_parameters = DrawParameters {
+            depth: glium::Depth{
+                test: glium::DepthTest::IfLess,
+                write: true,
+                .. Default::default()
+            },
+            blend: glium::Blend::alpha_blending(),
+            backface_culling: glium::BackfaceCullingMode::CullingDisabled,
+            .. Default::default()
+        };
+
         let collection = FontCollection::from_bytes(FONT_BYTES).unwrap();
         let font = collection.into_font().unwrap();
 
@@ -99,6 +111,7 @@ impl Renderer {
             view_matrix,
             delta_timer,
             draw_parameters,
+            draw_grid_parameters,
             quad_vbuffer,
             tooltip_textures,
             tooltip_transform,
@@ -109,11 +122,14 @@ impl Renderer {
 
     fn get_grid_buffer(display: &Display) -> VertexBuffer<Vertex> {
         let mut vec = Vec::with_capacity(21 * 4 * 2);
-        let line_width = 0.01;
         let normal = [0.0, 1.0, 0.0];
-        let color = [0.0; 3];
+        let color = [0.5; 3];
+        let line_width = 0.005;
 
         for i in -10..=10 {
+            if i == 0 {
+                continue;
+            }
             vec.push(Vertex{normal, color, pos: [i as f32 + line_width, 0.0, 10.0]});
             vec.push(Vertex{normal, color, pos: [i as f32 - line_width, 0.0, -10.0]});
             vec.push(Vertex{normal, color, pos: [i as f32 - line_width, 0.0, 10.0]});
@@ -127,9 +143,28 @@ impl Renderer {
             vec.push(Vertex{normal, color, pos: [-10.0, 0.0, i as f32 - line_width]});
 
             vec.push(Vertex{normal, color, pos: [10.0, 0.0, i as f32 + line_width]});
-            vec.push(Vertex{normal, color, pos: [-10.0, 0.0, i as f32 - line_width,]});
+            vec.push(Vertex{normal, color, pos: [-10.0, 0.0, i as f32 - line_width]});
             vec.push(Vertex{normal, color, pos: [-10.0, 0.0, i as f32 + line_width]});
         }
+
+        let color_red = [0.8, 0.2, 0.2];
+        let color_green = [0.2, 0.8, 0.2];
+
+        vec.push(Vertex{normal, color: color_green, pos: [0.01, 0.0, 10.0]});
+        vec.push(Vertex{normal, color: color_green, pos: [-0.01, 0.0, -10.0]});
+        vec.push(Vertex{normal, color: color_green, pos: [-0.01, 0.0, 10.0]});
+
+        vec.push(Vertex{normal, color: color_green, pos: [0.01, 0.0, 10.0]});
+        vec.push(Vertex{normal, color: color_green, pos: [0.01, 0.0, -10.0]});
+        vec.push(Vertex{normal, color: color_green, pos: [-0.01, 0.0, -10.0]});
+
+        vec.push(Vertex{normal, color: color_red, pos: [10.0, 0.0, 0.01]});
+        vec.push(Vertex{normal, color: color_red, pos: [10.0, 0.0, -0.01]});
+        vec.push(Vertex{normal, color: color_red, pos: [-10.0, 0.0, -0.01]});
+
+        vec.push(Vertex{normal, color: color_red, pos: [10.0, 0.0, 0.01]});
+        vec.push(Vertex{normal, color: color_red, pos: [-10.0, 0.0, -0.01]});
+        vec.push(Vertex{normal, color: color_red, pos: [-10.0, 0.0, 0.01]});
 
         glium::VertexBuffer::new(display, &vec).unwrap()
     }
@@ -147,18 +182,20 @@ impl Renderer {
             }
         }
 
-        let grid_uniforms = uniform!(
-            view: Matrix4Wrapper(self.view_matrix),
-            world: Matrix4Wrapper(*self.world_data.world_mat())
-        );
+        if self.world_data.grid_enabled {
+            let grid_uniforms = uniform!(
+                view: Matrix4Wrapper(self.view_matrix),
+                world: Matrix4Wrapper(*self.world_data.world_mat())
+            );
 
-        target.draw(
-            &self.grid_vbuffer,
-            glium::index::NoIndices(PrimitiveType::TrianglesList),
-            &self.grid_program,
-            &grid_uniforms,
-            &self.draw_parameters
-        ).unwrap();
+            target.draw(
+                &self.grid_vbuffer,
+                glium::index::NoIndices(PrimitiveType::TrianglesList),
+                &self.grid_program,
+                &grid_uniforms,
+                &self.draw_grid_parameters
+            ).unwrap();
+        }
 
         let uniforms = uniform!(
             view: Matrix4Wrapper(self.view_matrix),
